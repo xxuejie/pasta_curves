@@ -302,7 +302,7 @@ impl Fq {
     /// Converts from an integer represented in little endian
     /// into its (congruent) `Fq` representation.
     pub const fn from_raw(val: [u64; 4]) -> Self {
-        (&Fq(val)).mul(&R2)
+        (&Fq(val)).mul_const(&R2)
     }
 
     /// Squares this element.
@@ -385,9 +385,9 @@ impl Fq {
         (&Fq([r4, r5, r6, r7])).sub(&MODULUS)
     }
 
-    /// Multiplies `rhs` by `self`, returning the result.
+    /// Constant mul operation (portable but not optimal)
     #[cfg_attr(not(feature = "uninline-portable"), inline)]
-    pub const fn mul(&self, rhs: &Self) -> Self {
+    pub const fn mul_const(&self, rhs: &Self) -> Self {
         // Schoolbook multiplication
 
         let (r0, carry) = mac(0, self.0[0], rhs.0[0], 0);
@@ -411,6 +411,340 @@ impl Fq {
         let (r6, r7) = mac(r6, self.0[3], rhs.0[3], carry);
 
         Fq::montgomery_reduce(r0, r1, r2, r3, r4, r5, r6, r7)
+    }
+
+    /// Multiplies `rhs` by `self`, returning the result.
+    #[cfg(not(feature = "ckb-ops"))]
+    pub fn mul(&self, rhs: &Self) -> Self {
+        self.mul_const(rhs)
+    }
+
+    /// Multiplies `rhs` by `self`, returning the result.
+    /// Optimized version for CKB
+    #[cfg(feature = "ckb-ops")]
+    #[cfg_attr(not(feature = "uninline-portable"), inline)]
+    pub fn mul(&self, rhs: &Self) -> Self {
+        // Schoolbook multiplication
+
+        #[allow(unsafe_code)]
+        let r = unsafe {
+            // Compiler will optimize out the initialization part,
+            // there's no need to use MaybeUninit
+            let mut r: [u64; 8] = [0u64; 8];
+            // a0: lower bits of current multiplication
+            // a1: riscv carry flag
+            // a2 - a5: accumulated higher bits of carry values
+            // cached for sequential adding
+            // a6: current loaded lhs value, note this shall not
+            // be a popular register of RVC
+            core::arch::asm!(
+                // Round 1
+                "ld a6, 0({lhs})",
+                // "li a1, 0",
+                // let (r0, carry) = mac(0, self.0[0], rhs.0[0], 0);
+                "mulhu a2, a6, {rhs0}",
+                "mul {res0}, a6, {rhs0}",
+                //   adc res0, a1, a0
+                // "add {res0}, {res0}, a1",
+                // "sltu a1, {res0}, a1",
+                // "add {res0}, {res0}, a0",
+                // "sltu a0, {res0}, a0",
+                // "or a1, a1, a0",
+                // let (r1, carry) = mac(0, self.0[0], rhs.0[1], carry);
+                "mulhu a3, a6, {rhs1}",
+                "mul {res1}, a6, {rhs1}",
+                // adc res1, a1, a0
+                // "add {res1}, {res1}, a1",
+                // "sltu a1, {res1}, a1",
+                // "add {res1}, {res1}, a0",
+                // "sltu a0, {res1}, a0",
+                // "or a1, a1, a0",
+                // let (r2, carry) = mac(0, self.0[0], rhs.0[2], carry);
+                "mulhu a4, a6, {rhs2}",
+                "mul {res2}, a6, {rhs2}",
+                // adc res2, a1, a0
+                // "add {res2}, {res2}, a1",
+                // "sltu a1, {res2}, a1",
+                // "add {res2}, {res2}, a0",
+                // "sltu a0, {res2}, a0",
+                // "or a1, a1, a0",
+                // let (r3, r4) = mac(0, self.0[0], rhs.0[3], carry);
+                "mulhu a5, a6, {rhs3}",
+                "mul {res3}, a6, {rhs3}",
+                // adc res3, a1, a0
+                // "add {res3}, {res3}, a1",
+                // "sltu a1, {res3}, a1",
+                // "add {res3}, {res3}, a0",
+                // "sltu a0, {res3}, a0",
+                // "or a1, a1, a0",
+                // Add remaining carry flag
+                // "add {res4}, {res4}, a1",
+                "li {res4}, 0",
+                "li a1, 0",
+                // Add accumulated bits
+                //   adc res1, a1, a2
+                "add {res1}, {res1}, a1",
+                "sltu a1, {res1}, a1",
+                "add {res1}, {res1}, a2",
+                "sltu a2, {res1}, a2",
+                "or a1, a1, a2",
+                //   adc res2, a1, a3
+                "add {res2}, {res2}, a1",
+                "sltu a1, {res2}, a1",
+                "add {res2}, {res2}, a3",
+                "sltu a3, {res2}, a3",
+                "or a1, a1, a3",
+                //   adc res3, a1, a4
+                "add {res3}, {res3}, a1",
+                "sltu a1, {res3}, a1",
+                "add {res3}, {res3}, a4",
+                "sltu a4, {res3}, a4",
+                "or a1, a1, a4",
+                //   adc res4, a1, a5
+                "add {res4}, {res4}, a1",
+                "sltu a1, {res4}, a1",
+                "add {res4}, {res4}, a5",
+                "sltu a5, {res4}, a5",
+                "or a1, a1, a5",
+                // Add remaining carry flag
+                // "add {res5}, {res5}, a1",
+                "mv {res5}, a1",
+                "li a1, 0",
+
+                // Round 2
+                "ld a6, 8({lhs})",
+                // let (r1, carry) = mac(r1, self.0[1], rhs.0[0], 0);
+                "mulhu a2, a6, {rhs0}",
+                "mul a0, a6, {rhs0}",
+                //   adc res1, a1, a0
+                "add {res1}, {res1}, a1",
+                "sltu a1, {res1}, a1",
+                "add {res1}, {res1}, a0",
+                "sltu a0, {res1}, a0",
+                "or a1, a1, a0",
+                // let (r2, carry) = mac(r2, self.0[1], rhs.0[1], carry);
+                "mulhu a3, a6, {rhs1}",
+                "mul a0, a6, {rhs1}",
+                //   adc res2, a1, a0
+                "add {res2}, {res2}, a1",
+                "sltu a1, {res2}, a1",
+                "add {res2}, {res2}, a0",
+                "sltu a0, {res2}, a0",
+                "or a1, a1, a0",
+                // let (r3, carry) = mac(r3, self.0[1], rhs.0[2], carry);
+                "mulhu a4, a6, {rhs2}",
+                "mul a0, a6, {rhs2}",
+                //   adc res3, a1, a0
+                "add {res3}, {res3}, a1",
+                "sltu a1, {res3}, a1",
+                "add {res3}, {res3}, a0",
+                "sltu a0, {res3}, a0",
+                "or a1, a1, a0",
+                // let (r4, r5) = mac(r4, self.0[1], rhs.0[3], carry);
+                "mulhu a5, a6, {rhs3}",
+                "mul a0, a6, {rhs3}",
+                //   adc res4, a1, a0
+                "add {res4}, {res4}, a1",
+                "sltu a1, {res4}, a1",
+                "add {res4}, {res4}, a0",
+                "sltu a0, {res4}, a0",
+                "or a1, a1, a0",
+                // Add remaining carry flag
+                "add {res5}, {res5}, a1",
+                "li a1, 0",
+                // Add accumulated bits
+                //   adc res2, a1, a2
+                "add {res2}, {res2}, a1",
+                "sltu a1, {res2}, a1",
+                "add {res2}, {res2}, a2",
+                "sltu a2, {res2}, a2",
+                "or a1, a1, a2",
+                //   adc res3, a1, a3
+                "add {res3}, {res3}, a1",
+                "sltu a1, {res3}, a1",
+                "add {res3}, {res3}, a3",
+                "sltu a3, {res3}, a3",
+                "or a1, a1, a3",
+                //   adc res4, a1, a4
+                "add {res4}, {res4}, a1",
+                "sltu a1, {res4}, a1",
+                "add {res4}, {res4}, a4",
+                "sltu a4, {res4}, a4",
+                "or a1, a1, a4",
+                //   adc res5, a1, a5
+                "add {res5}, {res5}, a1",
+                "sltu a1, {res5}, a1",
+                "add {res5}, {res5}, a5",
+                "sltu a5, {res5}, a5",
+                "or a1, a1, a5",
+                // Add remaining carry flag
+                // "add {res6}, {res6}, a1",
+                "mv {res6}, a1",
+                "li a1, 0",
+
+                // Round 3
+                "ld a6, 16({lhs})",
+                // let (r2, carry) = mac(r2, self.0[2], rhs.0[0], 0);
+                "mulhu a2, a6, {rhs0}",
+                "mul a0, a6, {rhs0}",
+                //   adc res2, a1, a0
+                "add {res2}, {res2}, a1",
+                "sltu a1, {res2}, a1",
+                "add {res2}, {res2}, a0",
+                "sltu a0, {res2}, a0",
+                "or a1, a1, a0",
+                // let (r3, carry) = mac(r3, self.0[2], rhs.0[1], carry);
+                "mulhu a3, a6, {rhs1}",
+                "mul a0, a6, {rhs1}",
+                //   adc res3, a1, a0
+                "add {res3}, {res3}, a1",
+                "sltu a1, {res3}, a1",
+                "add {res3}, {res3}, a0",
+                "sltu a0, {res3}, a0",
+                "or a1, a1, a0",
+                // let (r4, carry) = mac(r4, self.0[2], rhs.0[2], carry);
+                "mulhu a4, a6, {rhs2}",
+                "mul a0, a6, {rhs2}",
+                //   adc res4, a1, a0
+                "add {res4}, {res4}, a1",
+                "sltu a1, {res4}, a1",
+                "add {res4}, {res4}, a0",
+                "sltu a0, {res4}, a0",
+                "or a1, a1, a0",
+                // let (r5, r6) = mac(r5, self.0[2], rhs.0[3], carry);
+                "mulhu a5, a6, {rhs3}",
+                "mul a0, a6, {rhs3}",
+                //   adc res5, a1, a0
+                "add {res5}, {res5}, a1",
+                "sltu a1, {res5}, a1",
+                "add {res5}, {res5}, a0",
+                "sltu a0, {res5}, a0",
+                "or a1, a1, a0",
+                // Add remaining carry flag
+                "add {res6}, {res6}, a1",
+                "li a1, 0",
+                // Add accumulated bits
+                //   adc res3, a1, a2
+                "add {res3}, {res3}, a1",
+                "sltu a1, {res3}, a1",
+                "add {res3}, {res3}, a2",
+                "sltu a2, {res3}, a2",
+                "or a1, a1, a2",
+                //   adc res4, a1, a3
+                "add {res4}, {res4}, a1",
+                "sltu a1, {res4}, a1",
+                "add {res4}, {res4}, a3",
+                "sltu a3, {res4}, a3",
+                "or a1, a1, a3",
+                //   adc res5, a1, a4
+                "add {res5}, {res5}, a1",
+                "sltu a1, {res5}, a1",
+                "add {res5}, {res5}, a4",
+                "sltu a4, {res5}, a4",
+                "or a1, a1, a4",
+                //   adc res6, a1, a5
+                "add {res6}, {res6}, a1",
+                "sltu a1, {res6}, a1",
+                "add {res6}, {res6}, a5",
+                "sltu a5, {res6}, a5",
+                "or a1, a1, a5",
+                // Add remaining carry flag
+                // "add {res7}, {res7}, a1",
+                "mv {res7}, a1",
+                "li a1, 0",
+
+                // Round 4
+                "ld a6, 24({lhs})",
+                // let (r3, carry) = mac(r3, self.0[3], rhs.0[0], 0);
+                "mulhu a2, a6, {rhs0}",
+                "mul a0, a6, {rhs0}",
+                //   adc res3, a1, a0
+                "add {res3}, {res3}, a1",
+                "sltu a1, {res3}, a1",
+                "add {res3}, {res3}, a0",
+                "sltu a0, {res3}, a0",
+                "or a1, a1, a0",
+                // let (r4, carry) = mac(r4, self.0[3], rhs.0[1], carry);
+                "mulhu a3, a6, {rhs1}",
+                "mul a0, a6, {rhs1}",
+                //   adc res4, a1, a0
+                "add {res4}, {res4}, a1",
+                "sltu a1, {res4}, a1",
+                "add {res4}, {res4}, a0",
+                "sltu a0, {res4}, a0",
+                "or a1, a1, a0",
+                // let (r5, carry) = mac(r5, self.0[3], rhs.0[2], carry);
+                "mulhu a4, a6, {rhs2}",
+                "mul a0, a6, {rhs2}",
+                //   adc res5, a1, a0
+                "add {res5}, {res5}, a1",
+                "sltu a1, {res5}, a1",
+                "add {res5}, {res5}, a0",
+                "sltu a0, {res5}, a0",
+                "or a1, a1, a0",
+                // let (r6, r7) = mac(r6, self.0[3], rhs.0[3], carry);
+                "mulhu a5, a6, {rhs3}",
+                "mul a0, a6, {rhs3}",
+                //   adc res6, a1, a0
+                "add {res6}, {res6}, a1",
+                "sltu a1, {res6}, a1",
+                "add {res6}, {res6}, a0",
+                "sltu a0, {res6}, a0",
+                "or a1, a1, a0",
+                // Add remaining carry flag
+                "add {res7}, {res7}, a1",
+                "li a1, 0",
+                // Add accumulated bits
+                //   adc res4, a1, a2
+                "add {res4}, {res4}, a1",
+                "sltu a1, {res4}, a1",
+                "add {res4}, {res4}, a2",
+                "sltu a2, {res4}, a2",
+                "or a1, a1, a2",
+                //   adc res5, a1, a3
+                "add {res5}, {res5}, a1",
+                "sltu a1, {res5}, a1",
+                "add {res5}, {res5}, a3",
+                "sltu a3, {res5}, a3",
+                "or a1, a1, a3",
+                //   adc res6, a1, a4
+                "add {res6}, {res6}, a1",
+                "sltu a1, {res6}, a1",
+                "add {res6}, {res6}, a4",
+                "sltu a4, {res6}, a4",
+                "or a1, a1, a4",
+                //   adc res7, a1, a5
+                "add {res7}, {res7}, a1",
+                "sltu a1, {res7}, a1",
+                "add {res7}, {res7}, a5",
+                "sltu a5, {res7}, a5",
+                "or a1, a1, a5",
+
+                res0 = out(reg) r[0],
+                res1 = out(reg) r[1],
+                res2 = out(reg) r[2],
+                res3 = out(reg) r[3],
+                res4 = out(reg) r[4],
+                res5 = out(reg) r[5],
+                res6 = out(reg) r[6],
+                res7 = out(reg) r[7],
+                lhs = in(reg) self.0.as_ptr(),
+                rhs0 = in(reg) rhs.0[0],
+                rhs1 = in(reg) rhs.0[1],
+                rhs2 = in(reg) rhs.0[2],
+                rhs3 = in(reg) rhs.0[3],
+                out("a0") _,
+                out("a1") _,
+                out("a2") _,
+                out("a3") _,
+                out("a4") _,
+                out("a5") _,
+                out("a6") _,
+            );
+            r
+        };
+
+        Fq::montgomery_reduce(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7])
     }
 
     /// Subtracts `rhs` from `self`, returning the result.
