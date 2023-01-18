@@ -73,6 +73,7 @@ repr-c = []
 uninline-portable = []
 serde = ["hex", "serde_crate"]
 static-sqrt-table = ["alloc"]
+ckb-asm = []
 
 [[example]]
 name = "dump-sqrt-tables"

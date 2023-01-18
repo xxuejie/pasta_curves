@@ -22,6 +22,9 @@ use crate::arithmetic::StaticSqrtTables;
 #[cfg(any(feature = "sqrt-table", feature = "static-sqrt-table"))]
 use crate::arithmetic::SqrtOperations;
 
+#[cfg(feature = "ckb-asm")]
+use crate::arithmetic::ckb_asm;
+
 /// This represents an element of $\mathbb{F}_q$ where
 ///
 /// `q = 0x40000000000000000000000000000000224698fc0994a8dd8c46eb2100000001`
@@ -200,6 +203,12 @@ impl<'a, 'b> Mul<&'b Fq> for &'a Fq {
 
     #[inline]
     fn mul(self, rhs: &'b Fq) -> Fq {
+        #[cfg(feature = "ckb-asm")]
+        {
+            self.fast_mul(rhs)
+        }
+
+        #[cfg(not(feature = "ckb-asm"))]
         self.mul(rhs)
     }
 }
@@ -445,6 +454,16 @@ impl Fq {
         let (r6, r7) = mac(r6, self.0[3], rhs.0[3], carry);
 
         Fq::montgomery_reduce(r0, r1, r2, r3, r4, r5, r6, r7)
+    }
+
+    /// Multiplies `rhs` by `self`, returning the result.
+    /// Optimized version for CKB
+    #[cfg(feature = "ckb-asm")]
+    #[cfg_attr(not(feature = "uninline-portable"), inline)]
+    pub fn fast_mul(&self, rhs: &Self) -> Self {
+        let r = ckb_asm::widening_mul_256(&self.0, &rhs.0);
+
+        Fq::montgomery_reduce(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7])
     }
 
     /// Subtracts `rhs` from `self`, returning the result.
