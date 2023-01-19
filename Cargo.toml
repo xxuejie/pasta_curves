@@ -72,3 +72,8 @@ sqrt-table = ["alloc", "lazy_static"]
 repr-c = []
 uninline-portable = []
 serde = ["hex", "serde_crate"]
+static-sqrt-table = ["alloc"]
+
+[[example]]
+name = "dump-sqrt-tables"
+required-features = ["sqrt-table"]

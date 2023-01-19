@@ -11,10 +11,16 @@ use lazy_static::lazy_static;
 #[cfg(feature = "bits")]
 use ff::{FieldBits, PrimeFieldBits};
 
-use crate::arithmetic::{adc, mac, sbb, SqrtTableHelpers};
+use crate::arithmetic::{adc, mac, sbb, FastDecoding, FastEncoding, SqrtTableHelpers};
 
 #[cfg(feature = "sqrt-table")]
 use crate::arithmetic::SqrtTables;
+
+#[cfg(all(feature = "static-sqrt-table", not(feature = "sqrt-table")))]
+use crate::arithmetic::StaticSqrtTables;
+
+#[cfg(any(feature = "sqrt-table", feature = "static-sqrt-table"))]
+use crate::arithmetic::SqrtOperations;
 
 /// This represents an element of $\mathbb{F}_q$ where
 ///
@@ -100,6 +106,34 @@ impl ConditionallySelectable for Fq {
             u64::conditional_select(&a.0[2], &b.0[2], choice),
             u64::conditional_select(&a.0[3], &b.0[3], choice),
         ])
+    }
+}
+
+impl FastEncoding for Fq {
+    fn fast_encode(&self, data: &mut [u8]) -> Result<(), &'static str> {
+        if data.len() != 32 {
+            return Err("Invalid buffer length for encoding Fq!");
+        }
+
+        data[0..8].copy_from_slice(&self.0[0].to_le_bytes());
+        data[8..16].copy_from_slice(&self.0[1].to_le_bytes());
+        data[16..24].copy_from_slice(&self.0[2].to_le_bytes());
+        data[24..32].copy_from_slice(&self.0[3].to_le_bytes());
+        Ok(())
+    }
+}
+
+impl FastDecoding for Fq {
+    fn fast_decode(data: &[u8]) -> Result<Self, &'static str> {
+        if data.len() != 32 {
+            return Err("Invalid buffer length for decoding Fq!");
+        }
+        Ok(Fq([
+            u64::from_le_bytes(data[0..8].try_into().unwrap()),
+            u64::from_le_bytes(data[8..16].try_into().unwrap()),
+            u64::from_le_bytes(data[16..24].try_into().unwrap()),
+            u64::from_le_bytes(data[24..32].try_into().unwrap()),
+        ]))
     }
 }
 
@@ -244,7 +278,7 @@ const DELTA: Fq = Fq::from_raw([
 ]);
 
 /// `(t - 1) // 2` where t * 2^s + 1 = p with t odd.
-#[cfg(any(test, not(feature = "sqrt-table")))]
+#[cfg(any(test, not(any(feature = "sqrt-table", feature = "static-sqrt-table"))))]
 const T_MINUS1_OVER2: [u64; 4] = [
     0x04ca_546e_c623_7590,
     0x0000_0000_1123_4c7e,
@@ -507,13 +541,23 @@ impl ff::Field for Fq {
             FQ_TABLES.sqrt_ratio(num, div)
         }
 
-        #[cfg(not(feature = "sqrt-table"))]
+        #[cfg(all(feature = "static-sqrt-table", not(feature = "sqrt-table")))]
+        {
+            STATIC_FQ_TABLES.sqrt_ratio(num, div)
+        }
+
+        #[cfg(not(any(feature = "sqrt-table", feature = "static-sqrt-table")))]
         ff::helpers::sqrt_ratio_generic(num, div)
     }
 
     #[cfg(feature = "sqrt-table")]
     fn sqrt_alt(&self) -> (Choice, Self) {
         FQ_TABLES.sqrt_alt(self)
+    }
+
+    #[cfg(all(feature = "static-sqrt-table", not(feature = "sqrt-table")))]
+    fn sqrt_alt(&self) -> (Choice, Self) {
+        STATIC_FQ_TABLES.sqrt_alt(self)
     }
 
     /// Computes the square root of this element, if it exists.
@@ -524,7 +568,13 @@ impl ff::Field for Fq {
             CtOption::new(res, is_square)
         }
 
-        #[cfg(not(feature = "sqrt-table"))]
+        #[cfg(all(feature = "static-sqrt-table", not(feature = "sqrt-table")))]
+        {
+            let (is_square, res) = STATIC_FQ_TABLES.sqrt_alt(self);
+            CtOption::new(res, is_square)
+        }
+
+        #[cfg(not(any(feature = "sqrt-table", feature = "static-sqrt-table")))]
         ff::helpers::sqrt_tonelli_shanks(self, &T_MINUS1_OVER2)
     }
 
@@ -686,6 +736,10 @@ lazy_static! {
     #[cfg_attr(docsrs, doc(cfg(feature = "sqrt-table")))]
     static ref FQ_TABLES: SqrtTables<Fq> = SqrtTables::new(0x116A9E, 1206);
 }
+
+#[cfg(all(feature = "static-sqrt-table", not(feature = "sqrt-table")))]
+const STATIC_FQ_TABLES: StaticSqrtTables<Fq> =
+    StaticSqrtTables::new(0x116A9E, 1206, core::include_bytes!("../../data/fq.data"));
 
 impl SqrtTableHelpers for Fq {
     fn pow_by_t_minus1_over2(&self) -> Self {

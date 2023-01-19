@@ -1,0 +1,27 @@
+name: Different feature build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install Rust components
+      run: rustup target add riscv64imac-unknown-none-elf && rustup component add clippy && rustup component add rustfmt
+    - name: Build without default features
+      run: cargo build --verbose --no-default-features
+    - name: Build with sqrt-table
+      run: cargo build --verbose --no-default-features --features=sqrt-table
+    - name: Build with static-sqrt-table
+      run: cargo build --verbose --no-default-features --features=static-sqrt-table
+    - name: Build with both
+      run: cargo build --verbose --no-default-features --features=sqrt-table,static-sqrt-table
+    - name: Cross build
+      run: cargo build --verbose --no-default-features --features=static-sqrt-table --target riscv64imac-unknown-none-elf
+    - name: Clippy
+      run: cargo clippy
+    - name: fmt
+      run: cargo fmt --all && git diff --exit-code
