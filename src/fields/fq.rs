@@ -381,7 +381,10 @@ impl Fq {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[cfg_attr(not(feature = "uninline-portable"), inline(always))]
+    #[cfg_attr(
+        not(any(feature = "uninline-portable", feature = "ckb-asm")),
+        inline(always)
+    )]
     const fn montgomery_reduce(
         r0: u64,
         r1: u64,
